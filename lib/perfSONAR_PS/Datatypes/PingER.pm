@@ -1,4 +1,4 @@
-use perfSONAR_PS::DB::PingER;
+use perfSONAR_PS::DB::SQL::PingER;
 
 package perfSONAR_PS::Datatypes::PingER;
 {
@@ -57,9 +57,10 @@ use perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Data::CommonTime;
 
 use perfSONAR_PS::Datatypes::v2_0::nmwgr::Message::Data::Datum;
 
+use perfSONAR_PS::Datatypes::v2_0::pinger::Message::Parameters;
 use perfSONAR_PS::Datatypes::v2_0::pinger::Message::Metadata::Parameters;
-use perfSONAR_PS::Datatypes::v2_0::pinger::Message::Metadata::Subject;
-use perfSONAR_PS::Datatypes::v2_0::pinger::Message::Metadata::Subject::Parameters;
+
+use perfSONAR_PS::Datatypes::v2_0::pinger::Message::Metadata::Subject; 
 use perfSONAR_PS::Datatypes::v2_0::pinger::Message::Data::CommonTime::Datum;
 
 use perfSONAR_PS::Datatypes::v2_0::select::Message::Metadata::Parameters;
@@ -72,7 +73,7 @@ use perfSONAR_PS::Datatypes::v2_0::nmwgt::Message::Metadata::Subject::EndPointPa
 
 use perfSONAR_PS::Datatypes::NSMap;
 use perfSONAR_PS::Datatypes::EventTypes;
-
+ 
  
 use base qw(perfSONAR_PS::Datatypes::Message);
  
@@ -85,12 +86,6 @@ use constant  LOCALNAME => 'message';
 our $_sizeLimit = '1000000'; 
 
  
-#  allow explicit invocation
-#
-sub DESTROY {
-    my $self = shift;
-    $self->SUPER::DESTROY  if $self->can("SUPER::DESTROY");
-}
  
 =head2 handle 
 
@@ -104,7 +99,7 @@ sub handle {
     my $type = shift;
     my $response = shift; 
     my $maconfig = shift;
-    my $logger  = get_logger( CLASSPATH );   
+    my $logger  = get_logger( CLASSPATH );
     no strict 'refs';  
     if($self->can($type)) {
         $_sizeLimit = $maconfig->{query_size_limit} if $maconfig && ref($maconfig) eq 'HASH' && $maconfig->{query_size_limit};
@@ -143,22 +138,15 @@ sub  MetadataKeyRequest {
     my $response = shift;
     my $logger  = get_logger( CLASSPATH );   
     $logger->debug("MetadataKeyRequest  ...");
-    # commented by YTL and MPG, because extra require breaks @INC
-    #  eval{
-    #   require perfSONAR_PS::DB::PingER_DB::MetaData::Manager; 
-    #  };
-    #  if($EVAL_ERROR) {
-    #     $logger->error("Failed to load PingER backend DB");
-    #     die " System error, store failed";
-    #  }
+ 
     unless($response && blessed  $response &&   $response->can("getDOM")) {
         $logger->error(" Please supply  metadata  object and not the:" . ref($response));
         return  " System error, API incomplete";
     }
-    my $message_params = perfSONAR_PS::Datatypes::v2_0::select::Message::Metadata::Parameters->new();
-    my $message_limit = perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Metadata::Parameters::Parameter->new({name => 'sizeLimit', value =>  $_sizeLimit});
-    $message_params->addParameter($message_limit);
-    $response->addParameters($message_params);
+    ##my $message_params = perfSONAR_PS::Datatypes::v2_0::select::Message::Parameters->new();
+    ##my $message_limit = perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Parameters::Parameter->new({name => 'sizeLimit', value =>  $_sizeLimit});
+    ##$message_params->addParameter($message_limit);
+    ##$response->addParameters($message_params);
     #### setting status URI for response 
     $self->eventTypes->status->operation('metadatakey');
     $logger->error(" Please supply  array of metadata and not: " . $self->metadata ) unless $self->metadata && ref($self->metadata) eq 'ARRAY';
@@ -166,40 +154,29 @@ sub  MetadataKeyRequest {
     my $requestmd =  $self->metadata->[0];
     my  $objects  = undef;### iterator returned by backend query
     if($requestmd->key  &&  $requestmd->key->id) {
-        $objects  = perfSONAR_PS::DB::PingER_DB::MetaData::Manager->get_metaData(
-                         query =>  [ metaId => {eq =>  $requestmd->key->id}] 
-                        );
-	$logger->debug(" Found Key =" . $requestmd->key->id);	       
+        $logger->debug(" Found Key =" . $requestmd->key->id);	  
+        $objects  = $self->DBO->getMeta([ metaID=> {eq =>  $requestmd->key->id}], 1);
+	     
     }  elsif(($requestmd->subject) ||  ($requestmd->parameters)) { 
-        my $query =  $self->buildQuery('eq', $requestmd );
+        my  $query = {query_metaData => []};
+        $query =  $self->buildQuery('eq', $requestmd );
+	$query =  {query_metaData => []} unless $query;
 	$logger->debug(" Will query = " . Dumper $query);	 	
-	unless($query && $query->{query_metaData} && ref($query->{query_metaData}) eq 'ARRAY' && scalar @{$query->{query_metaData}} > 0) {
-	    $logger->warn(" Empty or malformed request, md=" . $requestmd->id);
-	    $response->addResultResponse({ md => $requestmd, message => 'Empty or malformed request',  eventType => $self->eventTypes->status->failure});	
-            return;
-	}
-	eval {
-	    $objects  = perfSONAR_PS::DB::PingER_DB::MetaData::Manager->get_metaData(
-                            query =>    $query->{query_metaData},
-		            sort_by => 'metaID',
-			    limit => _mdSetLimit($query->{query_limit})
-                        );
-	};
+	$objects  =   $self->DBO->getMeta(  $query->{query_metaData},  _mdSetLimit($query->{query_limit}) );
+	 
 	if($EVAL_ERROR) {
 	    $logger->logdie("PingER backend  Query failed: " . $EVAL_ERROR);
 	}
-
     }  else {
 	$logger->warn("Malformed request or missing key or parameters, md=" . $requestmd->id);   
 	$response->addResultResponse({ md => $requestmd, message => 'Malformed request or missing key or parameters',  eventType => $self->eventTypes->status->failure});	
         return;     
     }
      
-    if($objects &&   ref($objects) eq 'ARRAY' &&   @{$objects} ) {
-	foreach my $md_sql (@{$objects}) {
-	    my $metaid = (ref($md_sql->metaID) eq 'Math::BigInt')?$md_sql->metaID->bstr:$md_sql->metaID;
+    if($objects &&   ref($objects) eq 'HASH' &&  %{$objects}) {
+	foreach my  $metaid (keys %{$objects}) {
 	    $logger->debug( "Found metaID " .  $metaid  );
-	    my $md =   $self->_ressurectMd({ md_row => $md_sql });  
+	    my $md =   $self->_ressurectMd({ md_row =>  $objects->{$metaid}  });  
 	    my $md_id = $response->addIDMetadata($md, $self->eventTypes->tools->pinger);
             $logger->debug(" MD created: \n " .  $md->asString);
 	    my $key =   perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Data::Key->new({id => $metaid });
@@ -272,22 +249,15 @@ sub  SetupDataRequest  {
     
     my $logger  = get_logger( CLASSPATH ); 
     $logger->debug("SetupdataKeyRequest  ..."); 
-   # commented by YTL and MPG, because extra require breaks @INC
-   #   eval{
-   #        require perfSONAR_PS::DB::PingER_DB::MetaData::Manager; 
-   #   };
-   #   if($EVAL_ERROR) {
-   #      $logger->fatal("Failed to load PingER backend DB ". $EVAL_ERROR);
-   #      die " System error, store failed ";
-   #   }
+ 
     unless($response && blessed  $response &&   $response->can("getDOM")) {
         $logger->error(" Please supply defined object of metadata and not:" . ref($response));
         return "System error,  API incomplete";
     }
-    my $message_params = perfSONAR_PS::Datatypes::v2_0::select::Message::Metadata::Parameters->new();
-    my $message_limit  = perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Metadata::Parameters::Parameter->new({name => 'sizeLimit', value =>  $_sizeLimit});
-    $message_params->addParameter($message_limit);
-    $response->addParameters($message_params);
+    ##my $message_params = perfSONAR_PS::Datatypes::v2_0::select::Message::Metadata::Parameters->new();
+    ##my $message_limit  = perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Metadata::Parameters::Parameter->new({name => 'sizeLimit', value =>  $_sizeLimit});
+    ##$message_params->addParameter($message_limit);
+    ##$response->addParameters($message_params);
     #### setting status URI for response
     $self->eventTypes->status->operation('setupdata'); 
     ####  
@@ -303,10 +273,10 @@ sub  SetupDataRequest  {
     my @filters = $self->filters?@{$self->filters}:();
      
     unless(  $requestmd  ) {
-        $logger->error("Orphaned data   - no  metadata found for metadataRefid:" . $data->metadataIdRef );
-        return; 
+         $logger->error("Orphaned data   - no  metadata found for metadataRefid:" . $data->metadataIdRef );
+         return; 
     } else {
-       $logger->debug("Found metadata in request id=" .  $requestmd->id . " metadata=" . $requestmd->asString );
+         $logger->debug("Found metadata in request id=" .  $requestmd->id . " metadata=" . $requestmd->asString );
     }
     ### objects hashref  returned by backend query with metaID as key
     my  $objects_hashref  = {};
@@ -316,37 +286,31 @@ sub  SetupDataRequest  {
 	        $response->addResultResponse({md => $requestmd, message => 'no  matching data found',  eventType => $self->eventTypes->status->failure});		   
 	        return $response;
 	    }
-     }   elsif($requestmd->subject) {
+     }   elsif($requestmd->subject | $requestmd->parameters) {
 	        my $query = {}; 
 	        my  $md_objects = undef;
 	        eval {
-		   foreach my $supplied_md ( $requestmd, @filters)  {
-	             %{$query} =  (%{$query} , %{$self->buildQuery('eq',  $supplied_md)});
-		    
-		   }  
+		     foreach my $supplied_md ( $requestmd, @filters)  {
+	                %{$query} =  (%{$query} , %{$self->buildQuery('eq',  $supplied_md)});		    
+		     }  
 		     $logger->debug(" Will query = " . Dumper $query);
 	             unless($query && $query->{query_metaData} &&  ref($query->{query_metaData}) eq 'ARRAY' && scalar @{$query->{query_metaData}} >= 1) {
 	                $logger->warn(" Nothing to query about for md=" . $requestmd->id);
 		        $response->addResultResponse({ md => $requestmd, message => 'Nothing to query about(no key or parameters supplied)',  eventType => $self->eventTypes->status->failure});	
                         return $response;
 	            }
-                    $md_objects  = perfSONAR_PS::DB::PingER_DB::MetaData::Manager->get_metaData(
-                                       query =>    $query->{query_metaData},
-				       sort_by => 'metaID',
-				       limit =>   _mdSetLimit($query->{query_limit}));
+                    $md_objects  = $self->DBO->getMeta($query->{query_metaData}, _mdSetLimit($query->{query_limit}) );
 	        };
 	        if($EVAL_ERROR) {
 	            $logger->fatal("PingER backend  Query failed: " . $EVAL_ERROR);
 		    die " System error, store failed";
 	        }
 	        my $timequery =  $self->processTime({timehash => $query->{time}});
-	        my $data_tables =  _getDataTables( $timequery );
-		###$self->_createTimeSelect({timequery => $timequery, response => $response, timeselects => $time_selects}); 
-	        if($md_objects &&  (ref($md_objects) eq 'ARRAY') &&   @{$md_objects}) { 
-	            foreach my $md_sql  (@{$md_objects}) {   
-		        my $md =  $self->_ressurectMd( { md_row => $md_sql});
-		        my $metaid = (ref($md_sql->metaID) eq 'Math::BigInt')?$md_sql->metaID->bstr:$md_sql->metaID;
-		        if($self->_retriveDataByKey({key =>  $metaid,   tables =>  $data_tables, timequery => $timequery, timeselects => $time_selects,
+	      
+		  if($md_objects &&  (ref($md_objects) eq 'HASH') &&   %{$md_objects}) { 
+	            foreach my $metaid  (sort { $a <=> $b} keys %{$md_objects}) {   
+		        my $md =  $self->_ressurectMd( { md_row =>  $md_objects->{$metaid}});
+		        if($self->_retriveDataByKey({key =>  $metaid,   timequery => $timequery, timeselects => $time_selects,
 			                             metaids => $metaids, datas => $objects_hashref, response => $response}) ){
 			    $response->addResultResponse({md => $md, message => 'no  matching data found',  eventType => $self->eventTypes->status->failure});		   
 	                    return $response;
@@ -363,21 +327,21 @@ sub  SetupDataRequest  {
 	    ############################################################   here add all those found data elements
            
             foreach my $metaid (keys %{$objects_hashref}) {     
-	        if(@{$objects_hashref->{$metaid}}) { 
+	        if(%{$objects_hashref->{$metaid}}) { 
 	            my $data  = perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Data->new({id => "data". $response->dataID, metadataIdRef => "meta" . $metaids->{$metaid}});
-	            foreach my $data_row (@{$objects_hashref->{$metaid}}) {   
-#	                $logger->debug(" What is data row :" .  Data::Dumper::Dumper $data_row);
-		        my $timev =  (ref($data_row->timestamp)  eq 'Math::BigInt')?$data_row->timestamp->bstr:$data_row->timestamp;
-		        my $ctime = perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Data::CommonTime->new({ type => 'unix', value => $timev});
-		        no strict 'refs'; 
-		        foreach my $entry (qw/minRtt maxRtt medianRtt meanRtt clp iqrIpd loostPercent  maxIpd minIpd meanIpd duplicates outOfOrder/) {
-		            next  unless $data_row->can($entry) &&  $data_row->$entry && !ref($data_row->$entry);
-		            my $value = $data_row->$entry;
-		            my $datum = perfSONAR_PS::Datatypes::v2_0::pinger::Message::Data::CommonTime::Datum->new({name => $entry , value  =>  $value});
-		            $ctime->addDatum($datum); 
-	                } 
-		        use strict;
-		        $data->addCommonTime($ctime);
+	            foreach my $data_metaid (sort { $a <=> $b} keys %{$objects_hashref->{$metaid}}) {   
+ 	                foreach my  $timev (sort { $a <=> $b} keys %{$objects_hashref->{$metaid}->{$data_metaid}}) {   	         
+                          $logger->debug(" What is data row :" .  Data::Dumper::Dumper $objects_hashref->{$metaid}->{$data_metaid}->{ $timev });
+		          my $ctime = perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Data::CommonTime->new({ type => 'unix', value => $timev});
+		       
+		          foreach my $entry (qw/minRtt maxRtt medianRtt meanRtt clp iqrIpd lostPercent  maxIpd minIpd meanIpd duplicates outOfOrder/) {
+		              next  unless  $objects_hashref->{$metaid}->{$data_metaid}->{ $timev }->{$entry};
+		              my $value =  $objects_hashref->{$metaid}->{$data_metaid}->{ $timev }->{$entry};
+		              my $datum = perfSONAR_PS::Datatypes::v2_0::pinger::Message::Data::CommonTime::Datum->new({name => $entry , value  =>  $value});
+		              $ctime->addDatum($datum); 
+	                  } 
+		          $data->addCommonTime($ctime);
+		        }
 	            }
 	            $response->addData($data); ## 
 	            $response->add_dataID; 
@@ -403,37 +367,7 @@ sub _mdSetLimit {
     }
     return $_sizeLimit;
 }
-#  auxiliary private function
-#  get the name of the data table ( data_yyyyMM format ) for specific time period
-#  returns hashref to data_yyyyMM => DatayyyyMM ( the late one for class name)
-#
-
-sub _getDataTables  {
-    my  $timequery = shift;
-    my %list = ();
-    my $One_DAY_inSec = 86400;
-    my $now =  time();
-    my $logger  = get_logger( CLASSPATH );  
-    my $stime =  $timequery->{gt}?$timequery->{gt}:$timequery->{eq};
-    my $etime =  $timequery->{lt}?$timequery->{lt}:$timequery->{eq};
-    $etime = $now if $etime>$now; ### corrected to current time to avoid creation of bogus empty data tables
-    $logger->debug(" Looking for Data tables starting=$stime ending=$etime ");
-    unless($stime && $etime) {
-        $logger->error(" Failed to get time values stime=$stime etime=$etime");
-        return undef;
-    }
-  	
-  	# check  the tables required
-     
-    &perfSONAR_PS::DB::PingER::get_rose_objects_for_timestamp( $stime, $etime );
-
-    for(my $i = $stime; $i<=$etime; $i+= $One_DAY_inSec ) {
-        $list{strftime("data_%Y%m", gmtime($i))} =  strftime("Data%Y%m", gmtime($i)); 
-	
-        $logger->debug("  FOUND------->  Data table: " . strftime("data_%Y%m", gmtime($i)));
-    }
-    return  \%list;
-}
+ 
 #
 #  auxiliary private function
 #  
@@ -448,43 +382,42 @@ sub _ressurectMd {
         return ' Parameters missed:  md_row , timequery are required parameters';
     } 
     my $md = undef;
+    
     if($params->{metaID}) {
         eval{
-	    ($params->{md_row})  = @{perfSONAR_PS::DB::PingER_DB::MetaData::Manager->get_metaData(
-                                     query =>  [ 'metaID' , {'eq' => $params->{metaID}}],
-		                   )}
+	    ($params->{metaID}, $params->{md_row})  = each %{$self->DBO->getMeta( [ 'metaID' , {'eq' => $params->{metaID}}], 1 )};
         };
 	if($EVAL_ERROR)  {
 	  $logger->logdie(" Fatal error while calling Rose::DB object query". $EVAL_ERROR);
 	}
     } 
   
-    my $metaid = (ref($params->{md_row}->metaID) eq 'Math::BigInt')?$params->{md_row}->metaID->bstr:$params->{md_row}->metaID;
+    my $metaid =  $params->{metaID};
     $md  = perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Metadata->new(); 
     my $key =  perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Metadata::Key->new({id => "meta$metaid" });
    
     my $subject = perfSONAR_PS::Datatypes::v2_0::pinger::Message::Metadata::Subject->new({ id => "subj$metaid",
   		      endPointPair => perfSONAR_PS::Datatypes::v2_0::nmwgt::Message::Metadata::Subject::EndPointPair->new({		      
-  		                          src => perfSONAR_PS::Datatypes::v2_0::nmwgt::Message::Metadata::Subject::EndPointPair::Src->new({ value =>  $params->{md_row}->ip_name_src, type => 'hostname'}),
-     				          dst => perfSONAR_PS::Datatypes::v2_0::nmwgt::Message::Metadata::Subject::EndPointPair::Dst->new({ value =>  $params->{md_row}->ip_name_dst, type => 'hostname'})
+  		                          src => perfSONAR_PS::Datatypes::v2_0::nmwgt::Message::Metadata::Subject::EndPointPair::Src->new({ value =>  $params->{md_row}->{ip_name_src}, type => 'hostname'}),
+     				          dst => perfSONAR_PS::Datatypes::v2_0::nmwgt::Message::Metadata::Subject::EndPointPair::Dst->new({ value =>  $params->{md_row}->{ip_name_dst}, type => 'hostname'})
      				      }) 
      		  });		  
      
-    my $pinger_params =   perfSONAR_PS::Datatypes::v2_0::pinger::Message::Metadata::Subject::Parameters->new({ id => "params$metaid" });
+    my $pinger_params =   perfSONAR_PS::Datatypes::v2_0::pinger::Message::Metadata::Parameters->new({ id => "params$metaid" });
     my $param_arrref = []; 
     no strict 'refs';
       
     foreach my $pparam (qw/count packetSize ttl transport packetInterval protocol/) { 
-        if($params->{md_row}->can($pparam) && $params->{md_row}->$pparam) {
-  	   push @{$param_arrref} , perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Metadata::Parameters::Parameter->new({name =>  $pparam , value => $params->{md_row}->$pparam});
+        if($params->{md_row}->{$pparam}) {
+  	   push @{$param_arrref} , perfSONAR_PS::Datatypes::v2_0::nmwg::Message::Metadata::Parameters::Parameter->new({name =>  $pparam , value => $params->{md_row}->{$pparam}});
         }
     }
     use strict;
+    $md->subject($subject); 
     if($param_arrref && @{$param_arrref}) {
         $pinger_params->parameter($param_arrref);
-        $subject->parameters($pinger_params);
+        $md->parameters($pinger_params);
     }
-    $md->subject($subject); 
     $md->key($key); 
     return $md;   
 }
@@ -550,34 +483,10 @@ sub _retriveDataByKey {
         $params->{response}->addResultResponse({ md =>  $params->{md}, message =>  'No time range in the query found' ,  eventType => $self->eventTypes->status->failure});	
         return -1;
     } 
-    
-    $params->{tables}  =  _getDataTables($params->{timequery}) unless  $params->{tables};
-    $logger->debug(" Will query for  Pinger data tables: " .  (join " : " , keys %{$params->{tables}}) . " TimeQuery: " . Data::Dumper::Dumper   $params->{timequery}  );
-    my $iterator_local = [];
-    my @timestamp_conditions = map { ('timestamp' => { $_ => $params->{timequery}->{$_} } )} keys %{$params->{timequery}};
-    no strict 'refs'; 
-    foreach my $table (keys %{$params->{tables}} ) { 
-        my $classname =    "perfSONAR_PS::DB::PingER_DB::" .  $params->{tables}->{$table} . "::Manager";
-        eval {
-            eval "require  $classname";
-	    my $objects =    ("$classname\:\:get_$table")->(
-                                query =>  [ metaID => {eq =>  $keyid},  @timestamp_conditions],
-	                        sort_by =>    'timestamp'); 
-	    if ($objects &&  (ref($objects) eq 'ARRAY') &&  @{$objects}) {
-	        push @{$iterator_local}, @{$objects};
-		$logger->debug(" Added objects ..... ......: " . scalar @{$objects});		
-	    } else {
-	        $logger->debug(" ...............No  objects .....from $table  ......: "  );	
-	    }
-        };
-        if($EVAL_ERROR) {
-            $logger->logdie(" Fatal error in DB query pinger data from  table $table, due " . $EVAL_ERROR);
-	    return -1;
-        }
-    }
-    use strict;
-    
-    if(@{$iterator_local}) {
+ 
+    my @timestamp_conditions = map { ('timestamp' => { $_ => $params->{timequery}->{$_} } )} keys %{$params->{timequery}};     
+    my  $iterator_local =  $self->DBO->getData( [ metaID => {eq =>  $keyid},  @timestamp_conditions], undef, $_sizeLimit);
+    if(%{$iterator_local}) {
         $params->{datas}->{$keyid} = $iterator_local;
         my $idref = $self->_createTimeSelect( $params );
 	$logger->debug(" Created Time Select ..... ......id=$idref");	 
@@ -592,7 +501,7 @@ sub _retriveDataByKey {
  
 =head1 AUTHORS
 
-   Maxim Grigoriev (FNAL)   2007
+   Maxim Grigoriev (FNAL)   2007-2008
 
 =cut
 }

@@ -2,7 +2,7 @@ package  perfSONAR_PS::Datatypes::v2_0::nmwgt::Message::Metadata::Subject::EndPo
 use strict;
 use warnings;
 use English qw( -no_match_vars);
-use version; our $VERSION = 0.08;
+use version; our $VERSION = qv('v2.0');
 =head1 NAME
 
  perfSONAR_PS::Datatypes::v2_0::nmwgt::Message::Metadata::Subject::EndPointPair::Dst  - A base class, implements  'dst'  element from the perfSONAR_PS RelaxNG schema
@@ -123,7 +123,7 @@ sub getDOM {
                              attributes => [
 
                                                ['value' =>  $self->value],
-                                               ['type' =>  $self->type],
+                                     ['type' =>  (($self->type    =~ m/(hostname)$/)?$self->type:undef)],
                                                ['port' =>  $self->port],
                                            ],
                                       'text' => (!($self->value)?$self->text:undef),
@@ -306,7 +306,7 @@ sub fromDOM {
      
     $self->value($dom->getAttribute('value')) if($dom->getAttribute('value'));
     $logger->debug(" Attribute value= ". $self->value) if $self->value; 
-    $self->type($dom->getAttribute('type')) if($dom->getAttribute('type'));
+    $self->type($dom->getAttribute('type')) if($dom->getAttribute('type') && ($dom->getAttribute('type')   =~ m/(hostname)$/));
     $logger->debug(" Attribute type= ". $self->type) if $self->type; 
     $self->port($dom->getAttribute('port')) if($dom->getAttribute('port'));
     $logger->debug(" Attribute port= ". $self->port) if $self->port; 
@@ -319,7 +319,7 @@ sub fromDOM {
  
 =head1 AUTHORS
 
-   Maxim Grigoriev (FNAL)  2007, maxim@fnal.gov
+   Maxim Grigoriev (FNAL)  2007-2008, maxim@fnal.gov
 
 =cut 
 
